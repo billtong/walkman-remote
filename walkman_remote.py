@@ -365,20 +365,40 @@ class WalkmanRemote(Gtk.Window):
 
         threading.Thread(target=self._poll_loop, daemon=True).start()
 
-    def _on_art_allocate(self, widget, alloc):
-        # Keep the art square: request height equal to the allocated width.
-        # The guard prevents an allocate/request feedback loop.
-        height = max(alloc.width, self.ART_MIN)
-        if widget.get_size_request()[1] != height:
-            widget.set_size_request(self.ART_MIN, height)
+    def _art_ratio(self):
+        """Height/width ratio the art strip should have. Square for square
+        or portrait covers (portrait gets pillarboxed left/right); shorter
+        for landscape covers so no empty band appears below them."""
+        if self._art_pixbuf is None:
+            return 1.0
+        return min(
+            1.0, self._art_pixbuf.get_height() / self._art_pixbuf.get_width())
+
+    def _sync_art_height(self, width=None):
+        # Request a strip height that fits the current art at the allocated
+        # width. The guard prevents an allocate/request feedback loop.
+        if width is None:
+            width = self.art_area.get_allocated_width()
+        height = max(round(width * self._art_ratio()), 1)
+        if self.art_area.get_size_request()[1] != height:
+            self.art_area.set_size_request(self.ART_MIN, height)
+
+    def _on_art_allocate(self, _widget, alloc):
+        self._sync_art_height(alloc.width)
 
     def _on_draw_art(self, widget, cr):
         alloc = widget.get_allocation()
         cr.set_source_rgb(0, 0, 0)
         cr.paint()
         if self._art_pixbuf is not None:
-            cr.scale(alloc.width / self._art_pixbuf.get_width(),
-                     alloc.height / self._art_pixbuf.get_height())
+            # Fit the image preserving its aspect ratio: flush to the top,
+            # centered horizontally (black padding left/right for images
+            # narrower than the strip) — never stretched.
+            width = self._art_pixbuf.get_width()
+            height = self._art_pixbuf.get_height()
+            scale = min(alloc.width / width, alloc.height / height)
+            cr.translate((alloc.width - width * scale) / 2, 0)
+            cr.scale(scale, scale)
             Gdk.cairo_set_source_pixbuf(cr, self._art_pixbuf, 0, 0)
             cr.paint()
         return False
@@ -477,6 +497,7 @@ class WalkmanRemote(Gtk.Window):
                     self._art_pixbuf = loader.get_pixbuf()
                 except GLib.Error:
                     pass
+            self._sync_art_height()
             self.art_area.queue_draw()
         # self.status_label.set_text(STATE_NAMES.get(state, f"state {state}"))
 
