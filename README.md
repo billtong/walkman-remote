@@ -41,7 +41,7 @@ commented out.
 |---|---|
 | Metadata + playback state (polled every 2 s, see `POLL_INTERVAL`) | `adb shell dumpsys media_session` |
 | Playback controls (commented out by default) | `adb shell cmd media_session dispatch <previous\|play-pause\|next>` |
-| Album art | `adb exec-out content read --uri content://media/external/audio/albumart/<album_id>` |
+| Album art | `adb exec-out content read --uri content://media/external/audio/albumart/<album_id>`, falling back to `adb pull` + extracting the embedded ID3 `APIC` image for formats Android can't thumbnail (e.g. AIFF) |
 
 All of these are read-only or equivalent to pressing the device's own media
 buttons — nothing is written to or installed on the device.

@@ -16,6 +16,7 @@ Run with the system python (needs PyGObject/GTK3):
 import os
 import re
 import subprocess
+import tempfile
 import threading
 
 # keep-above is not possible for Wayland-native windows, so force the X11
@@ -113,37 +114,138 @@ def parse_media_session(dump):
     return fallback
 
 
+def extract_embedded_art(data):
+    """Extract APIC image bytes from an ID3v2 tag embedded in a media file.
+
+    Handles AIFF (art lives in an 'ID3 ' chunk that Android's thumbnailer
+    ignores, so the albumart provider fails for these) and anything with a
+    plain ID3v2 tag (e.g. MP3). Returns JPEG/PNG bytes or None.
+    """
+    id3 = None
+    if data[:4] == b"FORM":
+        off = 12
+        while off + 8 <= len(data):
+            cid = data[off:off + 4]
+            size = int.from_bytes(data[off + 4:off + 8], "big")
+            if cid in (b"ID3 ", b"id3 "):
+                id3 = data[off + 8:off + 8 + size]
+                break
+            off += 8 + size + (size & 1)
+    else:
+        idx = data.find(b"ID3")
+        if idx >= 0:
+            id3 = data[idx:]
+    if not id3 or id3[:3] != b"ID3":
+        return None
+    major = id3[3]
+    pos = 10
+    while pos + 10 <= len(id3):
+        frame_id = id3[pos:pos + 4]
+        raw = id3[pos + 4:pos + 8]
+        if major >= 4:  # v2.4 uses syncsafe frame sizes
+            size = 0
+            for byte in raw:
+                size = (size << 7) | (byte & 0x7F)
+        else:
+            size = int.from_bytes(raw, "big")
+        if size <= 0:
+            return None
+        if frame_id == b"APIC":
+            frame = id3[pos + 10:pos + 10 + size]
+            for magic in (b"\xff\xd8\xff", b"\x89PNG"):
+                start = frame.find(magic)
+                if start >= 0:
+                    return frame[start:]
+        pos += 10 + size
+    return None
+
+
+def norm(text):
+    """Normalize a title/album for fuzzy matching: case-fold, strip a
+    leading track-number prefix ("02. ", "3 - ", …), collapse whitespace."""
+    text = re.sub(r"^\s*\d{1,3}\s*[.\-_]?\s+", "", text.strip().lower())
+    return re.sub(r"\s+", " ", text)
+
+
 class ArtResolver:
     """Maps track titles to album art bytes via the device MediaStore."""
 
     def __init__(self):
-        self._title_to_album = {}   # title -> album_id
+        self._title_to_album = {}   # exact title -> (album_id, file path)
+        self._norm_index = {}       # norm(title) -> [(norm(album), id, path)]
         self._art_cache = {}        # album_id -> bytes or None
 
     def _refresh_library(self):
         out = adb(
             "shell", "content", "query",
             "--uri", "content://media/external/audio/media",
-            "--projection", "title:album_id",
+            "--projection", "title:album:album_id:_data",
             timeout=30,
         )
         if not out:
             return
-        # Row format: "Row: N title=<title>, album_id=<id>" — the title can
-        # contain commas, so anchor on the trailing album_id instead of
-        # splitting on commas.
-        self._title_to_album = {
-            m.group(1): m.group(2)
-            for m in re.finditer(r"title=(.*), album_id=(\d+)\s*$", out, re.M)
-        }
+        # Row format:
+        #   "Row: N title=<title>, album=<album>, album_id=<id>, _data=<path>"
+        # title/album can contain commas, so anchor on the fixed-format
+        # album_id instead of splitting on commas.
+        self._title_to_album = {}
+        self._norm_index = {}
+        for m in re.finditer(
+                r"title=(.*), album=(.*), album_id=(\d+), _data=(.*)$",
+                out, re.M):
+            title, album, album_id, path = m.groups()
+            self._title_to_album[title] = (album_id, path.strip())
+            self._norm_index.setdefault(norm(title), []).append(
+                (norm(album), album_id, path.strip()))
 
-    def art_for(self, title):
-        """Return JPEG/PNG bytes for the track's album, or None."""
-        if title not in self._title_to_album:
-            self._refresh_library()
-        album_id = self._title_to_album.get(title)
-        if album_id is None:
+    def _lookup(self, title, album):
+        """Find the album_id for a track, tolerating tag differences.
+
+        The player's session metadata and MediaStore often disagree on the
+        exact title (e.g. "WINDY SUMMER" vs "02. WINDY SUMMER") or album
+        ("TIMELY!! [Remaster]" vs "Timely!!"), so fall back from exact title
+        match to normalized title match, using the album name to pick among
+        candidates when it helps.
+        """
+        if title in self._title_to_album:
+            return self._title_to_album[title]
+        candidates = self._norm_index.get(norm(title), [])
+        if not candidates:
             return None
+        want = norm(album)
+        if want:
+            for got, album_id, path in candidates:
+                if got and (want in got or got in want):
+                    return (album_id, path)
+        return candidates[0][1:]
+
+    def _embedded_art(self, path):
+        """Pull the audio file off the device and extract its embedded art.
+
+        Fallback for formats whose art Android's albumart provider cannot
+        thumbnail (e.g. AIFF). `adb pull` is used rather than `exec-out cat`
+        because pull needs no device-shell quoting of exotic file names.
+        """
+        if not path:
+            return None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local = os.path.join(tmpdir, "track")
+            if adb("pull", path, local, timeout=120) is None:
+                return None
+            try:
+                with open(local, "rb") as fh:
+                    return extract_embedded_art(fh.read())
+            except OSError:
+                return None
+
+    def art_for(self, title, album=""):
+        """Return JPEG/PNG bytes for the track's album, or None."""
+        if self._lookup(title, album) is None:
+            self._refresh_library()
+        found = self._lookup(title, album)
+        if found is None:
+            return None
+        album_id, path = found
         if album_id not in self._art_cache:
             data = adb(
                 "exec-out", "content", "read",
@@ -152,7 +254,7 @@ class ArtResolver:
             )
             # A failed read returns a text error message, not image bytes.
             if not data or not data.startswith((b"\xff\xd8", b"\x89PNG")):
-                data = None
+                data = self._embedded_art(path)
             self._art_cache[album_id] = data
         return self._art_cache[album_id]
 
@@ -341,7 +443,7 @@ class WalkmanRemote(Gtk.Window):
                 info = parse_media_session(dump)
                 art = None
                 if info and info[0] and info[0] != self._current_art_title:
-                    art = self._art.art_for(info[0])
+                    art = self._art.art_for(info[0], info[2])
                 GLib.idle_add(self._show_info, info, art)
             self._poke.wait(POLL_INTERVAL)
             self._poke.clear()
