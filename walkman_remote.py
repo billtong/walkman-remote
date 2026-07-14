@@ -266,23 +266,23 @@ class WalkmanRemote(Gtk.Window):
 
     # (column, row) zone of the pointer -> resize edge / cursor name.
     # Column/row are 0 (near left/top edge), 1 (middle), 2 (near right/bottom).
+    # Only horizontal resizing is offered: the window height always hugs the
+    # content (art + labels), so a height drag would just be snapped back.
     EDGES = {
-        (0, 0): Gdk.WindowEdge.NORTH_WEST, (1, 0): Gdk.WindowEdge.NORTH,
-        (2, 0): Gdk.WindowEdge.NORTH_EAST, (0, 1): Gdk.WindowEdge.WEST,
-        (2, 1): Gdk.WindowEdge.EAST, (0, 2): Gdk.WindowEdge.SOUTH_WEST,
-        (1, 2): Gdk.WindowEdge.SOUTH, (2, 2): Gdk.WindowEdge.SOUTH_EAST,
+        (0, 0): Gdk.WindowEdge.WEST, (0, 1): Gdk.WindowEdge.WEST,
+        (0, 2): Gdk.WindowEdge.WEST, (2, 0): Gdk.WindowEdge.EAST,
+        (2, 1): Gdk.WindowEdge.EAST, (2, 2): Gdk.WindowEdge.EAST,
     }
     CURSOR_NAMES = {
-        (0, 0): "nw-resize", (1, 0): "n-resize", (2, 0): "ne-resize",
-        (0, 1): "w-resize", (2, 1): "e-resize",
-        (0, 2): "sw-resize", (1, 2): "s-resize", (2, 2): "se-resize",
+        (0, 0): "w-resize", (0, 1): "w-resize", (0, 2): "w-resize",
+        (2, 0): "e-resize", (2, 1): "e-resize", (2, 2): "e-resize",
     }
 
     def __init__(self):
         super().__init__(title="Walkman Remote")
-        # No border padding so the cover art sits edge-to-edge. Enough
-        # default height that the art starts roughly square.
-        self.set_default_size(self.ART_SIZE, self.ART_SIZE + 80)
+        # No border padding so the cover art sits edge-to-edge. Height is
+        # never set explicitly — it always hugs the content.
+        self.set_default_size(self.ART_SIZE, -1)
         self.connect("destroy", Gtk.main_quit)
 
         # Minimalist frameless window: no titlebar. Drag the middle to move,
@@ -337,6 +337,8 @@ class WalkmanRemote(Gtk.Window):
         self.album_label = Gtk.Label(label="")
         self.artist_label.set_line_wrap(True)
         self.album_label.set_line_wrap(True)
+        # Mirror the 12px art-to-title gap below the last label.
+        self.album_label.set_margin_bottom(12)
         box.pack_start(self.artist_label, False, False, 0)
         box.pack_start(self.album_label, False, False, 0)
 
@@ -382,6 +384,14 @@ class WalkmanRemote(Gtk.Window):
         height = max(round(width * self._art_ratio()), 1)
         if self.art_area.get_size_request()[1] != height:
             self.art_area.set_size_request(self.ART_MIN, height)
+            # Snap the window height down to the new natural height so no
+            # empty band is left at the bottom (resize clamps to the
+            # content minimum). Deferred: we may be inside size-allocate.
+            GLib.idle_add(self._snap_height)
+
+    def _snap_height(self):
+        self.resize(self.get_size()[0], 1)
+        return False
 
     def _on_art_allocate(self, _widget, alloc):
         self._sync_art_height(alloc.width)

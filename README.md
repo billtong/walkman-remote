@@ -14,7 +14,9 @@ commented out.
 - Shows current track title, artist, album, and album art
 - Walkman-style theme: black background, gold lettering
 - Minimalist frameless window: no titlebar — **drag the middle to move, drag
-  near an edge/corner to resize (cursor changes), press Escape to quit**
+  the left/right edges to resize (cursor changes), press Escape to quit**.
+  Only the width is adjustable; the height always hugs the content, with a
+  symmetric 12px gap above the title and below the album line
 - Always on top of other windows
 - Cover art scales with the window, pinned flush to the top edge
   (default 240px wide, shrinkable down to 120px)
