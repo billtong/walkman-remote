@@ -19,8 +19,9 @@ beyond system PyGObject, no test suite.
   there and typically missing from any active venv. Plain `python3` may
   resolve to a venv.
 - Requires the device connected with USB debugging authorized (`adb devices`).
-- The window is frameless: drag middle to move, drag left/right edges to
-  resize (width only — height always hugs the content), **Escape to quit**.
+- The window is frameless: drag middle to move, drag edges/corners to
+  resize (max height is capped at the content's natural height via a
+  geometry hint — see `_update_max_height`), **Escape to quit**.
 - To restart a running instance: `pgrep -f "walkman_[r]emote" | xargs -r kill`
   — the `[r]` bracket is load-bearing; a plain pattern also matches the shell
   command that contains the filename and kills your own shell. For the same

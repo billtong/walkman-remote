@@ -266,16 +266,16 @@ class WalkmanRemote(Gtk.Window):
 
     # (column, row) zone of the pointer -> resize edge / cursor name.
     # Column/row are 0 (near left/top edge), 1 (middle), 2 (near right/bottom).
-    # Only horizontal resizing is offered: the window height always hugs the
-    # content (art + labels), so a height drag would just be snapped back.
     EDGES = {
-        (0, 0): Gdk.WindowEdge.WEST, (0, 1): Gdk.WindowEdge.WEST,
-        (0, 2): Gdk.WindowEdge.WEST, (2, 0): Gdk.WindowEdge.EAST,
-        (2, 1): Gdk.WindowEdge.EAST, (2, 2): Gdk.WindowEdge.EAST,
+        (0, 0): Gdk.WindowEdge.NORTH_WEST, (1, 0): Gdk.WindowEdge.NORTH,
+        (2, 0): Gdk.WindowEdge.NORTH_EAST, (0, 1): Gdk.WindowEdge.WEST,
+        (2, 1): Gdk.WindowEdge.EAST, (0, 2): Gdk.WindowEdge.SOUTH_WEST,
+        (1, 2): Gdk.WindowEdge.SOUTH, (2, 2): Gdk.WindowEdge.SOUTH_EAST,
     }
     CURSOR_NAMES = {
-        (0, 0): "w-resize", (0, 1): "w-resize", (0, 2): "w-resize",
-        (2, 0): "e-resize", (2, 1): "e-resize", (2, 2): "e-resize",
+        (0, 0): "nw-resize", (1, 0): "n-resize", (2, 0): "ne-resize",
+        (0, 1): "w-resize", (2, 1): "e-resize",
+        (0, 2): "sw-resize", (1, 2): "s-resize", (2, 2): "se-resize",
     }
 
     def __init__(self):
@@ -311,20 +311,23 @@ class WalkmanRemote(Gtk.Window):
 
         # Art is painted onto a DrawingArea so it rescales with the window
         # (a fixed Gtk.Image would impose a hard minimum window size and
-        # block shrinking). It is kept square by forcing its height request
-        # to match its allocated width, and packed non-expanding at the top
-        # so no gap appears above it — leftover space goes below the labels.
+        # block shrinking). It expands to fill whatever height the window
+        # has beyond the labels; the drawn image fits inside it, and a
+        # max-height geometry hint (_update_max_height) stops the window
+        # from growing past the point where the art fills the width, so no
+        # dead band can open below the labels.
         self._art_pixbuf = None
+        self._last_max_height = None
         self.art_area = Gtk.DrawingArea()
         self.art_area.set_size_request(self.ART_MIN, self.ART_MIN)
         self.art_area.connect("draw", self._on_draw_art)
-        self.art_area.connect("size-allocate", self._on_art_allocate)
         self.art_area.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK)
         self.art_area.connect("button-press-event", self._on_drag)
         self.art_area.connect("motion-notify-event", self._on_motion)
-        box.pack_start(self.art_area, False, False, 0)
+        box.pack_start(self.art_area, True, True, 0)
+        self.connect("size-allocate", self._on_window_allocate)
 
         self.title_label = Gtk.Label(label="—")
         self.title_label.set_margin_top(12)
@@ -376,25 +379,32 @@ class WalkmanRemote(Gtk.Window):
         return min(
             1.0, self._art_pixbuf.get_height() / self._art_pixbuf.get_width())
 
-    def _sync_art_height(self, width=None):
-        # Request a strip height that fits the current art at the allocated
-        # width. The guard prevents an allocate/request feedback loop.
-        if width is None:
-            width = self.art_area.get_allocated_width()
-        height = max(round(width * self._art_ratio()), 1)
-        if self.art_area.get_size_request()[1] != height:
-            self.art_area.set_size_request(self.ART_MIN, height)
-            # Snap the window height down to the new natural height so no
-            # empty band is left at the bottom (resize clamps to the
-            # content minimum). Deferred: we may be inside size-allocate.
-            GLib.idle_add(self._snap_height)
-
-    def _snap_height(self):
-        self.resize(self.get_size()[0], 1)
+    def _update_max_height(self, fit=False):
+        """Recompute the window's maximum height: the art shown at full
+        width plus the labels. Growing taller than that would only add a
+        dead black band under the album label, so it is forbidden via a
+        geometry hint; shrinking below it is allowed (the art scales down,
+        pillarboxed). With fit=True the window height is also raised to
+        that maximum, used when new art arrives so it shows full-size.
+        """
+        width = self.get_size()[0]
+        # Labels' share = the box's natural height minus the art area's
+        # minimum request (margins are included in the labels' preference).
+        labels = self.get_child().get_preferred_height()[1] - self.ART_MIN
+        max_height = round(width * self._art_ratio()) + labels
+        if max_height != self._last_max_height:
+            self._last_max_height = max_height
+            geometry = Gdk.Geometry()
+            geometry.max_width = 32767
+            geometry.max_height = max_height
+            self.set_geometry_hints(None, geometry, Gdk.WindowHints.MAX_SIZE)
+        if fit or self.get_size()[1] > max_height:
+            self.resize(width, max_height)
         return False
 
-    def _on_art_allocate(self, _widget, alloc):
-        self._sync_art_height(alloc.width)
+    def _on_window_allocate(self, _widget, _alloc):
+        # Deferred: hints/resize must not be changed during allocation.
+        GLib.idle_add(self._update_max_height)
 
     def _on_draw_art(self, widget, cr):
         alloc = widget.get_allocation()
@@ -507,7 +517,7 @@ class WalkmanRemote(Gtk.Window):
                     self._art_pixbuf = loader.get_pixbuf()
                 except GLib.Error:
                     pass
-            self._sync_art_height()
+            GLib.idle_add(self._update_max_height, True)
             self.art_area.queue_draw()
         # self.status_label.set_text(STATE_NAMES.get(state, f"state {state}"))
 
