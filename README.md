@@ -1,10 +1,13 @@
 # Walkman Remote
 
-Small GTK3 desktop app to control music playing on an ADB-connected Android
-device (built for the Sony NW-WM1AM2, but works with any device whose player
-exposes a standard Android MediaSession).
+Minimalist GTK3 desktop widget that shows what's playing on an ADB-connected
+Android device (built for the Sony NW-WM1AM2, but works with any device whose
+player exposes a standard Android MediaSession).
 
-![controls](https://img.shields.io/badge/prev%20%C2%B7%20play%2Fpause%20%C2%B7%20next-blue)
+By default it is a display-only "now playing" panel: cover art with the track
+title, artist, and album beneath it, styled after the Walkman's black-and-gold
+look. Playback control code (prev / play-pause / next) is included but
+commented out.
 
 ## Features
 
@@ -12,7 +15,9 @@ exposes a standard Android MediaSession).
 - Walkman-style theme: black background, gold lettering
 - Minimalist frameless window: no titlebar — **drag the middle to move, drag
   near an edge/corner to resize (cursor changes), press Escape to quit**
-- Cover art scales with the window (shrinkable down to 120px)
+- Always on top of other windows
+- Cover art scales with the window, pinned flush to the top edge
+  (default 240px wide, shrinkable down to 120px)
 - Survives USB unplug/replug (auto-retries in the background)
 - Prev / Play-Pause / Next buttons and the playback-state status line exist
   but are commented out in `walkman_remote.py` (search for "hidden") —
@@ -34,9 +39,12 @@ exposes a standard Android MediaSession).
 
 | What | ADB command |
 |---|---|
-| Metadata + playback state (polled every 2 s) | `adb shell dumpsys media_session` |
-| Buttons | `adb shell cmd media_session dispatch <previous\|play-pause\|next>` |
+| Metadata + playback state (polled every 2 s, see `POLL_INTERVAL`) | `adb shell dumpsys media_session` |
+| Playback controls (commented out by default) | `adb shell cmd media_session dispatch <previous\|play-pause\|next>` |
 | Album art | `adb exec-out content read --uri content://media/external/audio/albumart/<album_id>` |
+
+All of these are read-only or equivalent to pressing the device's own media
+buttons — nothing is written to or installed on the device.
 
 The album art lookup maps the current title to an `album_id` via a cached
 MediaStore query (`content query --uri content://media/external/audio/media
@@ -46,3 +54,12 @@ albumart content provider.
 `cmd media_session dispatch` is used instead of `input keyevent 85/87/88`
 because it reaches the media button session even after the player app has
 gone idle and dropped its active session.
+
+## Implementation notes
+
+- The script forces `GDK_BACKEND=x11` before GTK loads: always-on-top
+  (`set_keep_above`) is ignored for Wayland-native windows, so on a Wayland
+  session the app runs under XWayland where the window manager honors it.
+- The art is painted onto a `Gtk.DrawingArea` kept square by matching its
+  height request to its allocated width — a fixed `Gtk.Image` would impose a
+  hard minimum window size and block shrinking.
